@@ -48,8 +48,8 @@ func TestCallListScopedAndSorted(t *testing.T) {
 
 func TestCallListEmptyIsJSONArray(t *testing.T) {
 	s := callsServer()
-	s.broker.EndCall("c-late", "declined")
-	s.broker.EndCall("c-early", "declined")
+	s.broker.EndCall("s1", "c-late", "declined")
+	s.broker.EndCall("s1", "c-early", "declined")
 	rec := httptest.NewRecorder()
 	s.routes().ServeHTTP(rec, httptest.NewRequest("GET", "/api/sessions/s1/calls", nil))
 	if rec.Code != 200 || rec.Body.String() != "{\"calls\":[]}\n" {

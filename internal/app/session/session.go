@@ -50,6 +50,13 @@ type Session struct {
 
 	mu   sync.Mutex
 	auth events.AuthSnapshot
+
+	// call recording (see recording.go)
+	recMu       sync.Mutex
+	recWant     map[string]bool
+	recAnnounce map[string]bool
+	recorders   map[string]*Recorder
+	announcing  map[string]bool
 }
 
 // browserGraceWindow is how long a call is held after its browser leg drops (e.g. a
@@ -65,6 +72,11 @@ func newSession(mgr *Manager, id, name string, client *whatsmeow.Client) *Sessio
 		client:  client,
 		auth:    events.AuthSnapshot{State: "connecting"},
 		bridges: map[string]*Bridge{},
+
+		recWant:     map[string]bool{},
+		recAnnounce: map[string]bool{},
+		recorders:   map[string]*Recorder{},
+		announcing:  map[string]bool{},
 	}
 	s.grace = newGraceKeeper(browserGraceWindow, func(callID string) {
 		s.log.Warn("call ended: browser did not return within the grace window", "call_id", callID)
@@ -110,14 +122,14 @@ func (s *Session) wireCall(callID string, cm *call.CallManager) {
 		if c.IsEnded() {
 			s.mgr.tracer.EndCall(c.CallID, endResult(c), string(c.StateData.EndReason), endDuration(c))
 			s.removeCall(c.CallID)
-			s.mgr.broker.EndCall(c.CallID, string(c.StateData.EndReason))
+			s.mgr.broker.EndCall(s.id, c.CallID, string(c.StateData.EndReason))
 			return
 		}
 		dir := "outbound"
 		if c.Direction == core.CallDirectionIncoming {
 			dir = "inbound"
 		}
-		existing, _ := s.mgr.broker.GetCall(c.CallID)
+		existing, _ := s.mgr.broker.GetCall(s.id, c.CallID)
 		if existing == nil {
 			s.mgr.tracer.StartCall(c.CallID, telemetry.CallAttrs{Session: s.id, Peer: c.PeerJid, Direction: dir})
 		}
@@ -136,13 +148,17 @@ func (s *Session) wireCall(callID string, cm *call.CallManager) {
 			rec.PeerPhotoURL = existing.PeerPhotoURL
 		}
 		s.mgr.broker.UpsertCall(rec)
+		if rec.Status == events.StatusConnected {
+			s.maybeStartRecording(c.CallID)
+		}
 	}
 	cm.OnEnded = func(c *call.CallInfo) {
 		s.mgr.tracer.EndCall(c.CallID, endResult(c), string(c.StateData.EndReason), endDuration(c))
 		s.removeCall(c.CallID)
-		s.mgr.broker.EndCall(c.CallID, string(c.StateData.EndReason))
+		s.mgr.broker.EndCall(s.id, c.CallID, string(c.StateData.EndReason))
 	}
 	cm.OnPeerAudio = func(pcm16 []float32) {
+		s.recorder(callID).WriteDown(pcm16)
 		if b := s.getBridge(callID); b != nil {
 			_ = b.WritePCM(pcm16)
 		}
@@ -214,7 +230,12 @@ func (s *Session) startPairing(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := s.client.Connect(); err != nil {
+	// store.DeviceProps is process-global and is marshalled during the Connect() handshake
+	// (getRegistrationPayload), so set it per session under a lock around Connect().
+	s.mu.Lock()
+	name := s.name
+	s.mu.Unlock()
+	if err := connectWithDeviceProps(s.client, name); err != nil {
 		return err
 	}
 	go func() {
@@ -310,6 +331,7 @@ func (s *Session) removeCall(callID string) {
 	delete(s.bridges, callID)
 	s.grace.cancel(callID)
 	s.bridgeMu.Unlock()
+	s.stopRecording(callID)
 	if b != nil {
 		b.Close()
 	}

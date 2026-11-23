@@ -44,10 +44,16 @@ type checkResult struct {
 // the server starts; it opens and closes each resource it probes.
 func Doctor(ctx context.Context, cfg config.Config, w io.Writer) bool {
 	stunIP, stunServer, stunErr := probeExternalIP(ctx, cfg.STUNServers, cfg.WebRTCUDPPort)
+	publicIP := checkPublicIP(cfg.PublicIPs, localIPv4s())
+	configured := cfg.PublicIPs
+	if config.IsAutoPublicIP(cfg.PublicIPs) {
+		publicIP = checkResult{name: "public ip", status: statusOK, detail: "WACALLS_PUBLIC_IP=auto (followed via stun)"}
+		configured = nil
+	}
 	results := []checkResult{
 		checkUDPPort(cfg.WebRTCUDPPort),
-		checkPublicIP(cfg.PublicIPs, localIPv4s()),
-		checkExternalIP(cfg.PublicIPs, stunIP, stunServer, stunErr),
+		publicIP,
+		checkExternalIP(configured, stunIP, stunServer, stunErr),
 		checkDatabase(ctx, storeConfigFor(cfg)),
 		{name: "relays", status: statusInfo, detail: "discovered per call via WhatsApp signaling; not checkable in preflight"},
 	}

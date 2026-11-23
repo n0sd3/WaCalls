@@ -94,6 +94,12 @@ func parsePublicIPs(raw string) []string {
 	return out
 }
 
+// IsAutoPublicIP reports WACALLS_PUBLIC_IP=auto: discover (and keep following)
+// the public IP via STUN instead of a fixed address.
+func IsAutoPublicIP(ips []string) bool {
+	return len(ips) == 1 && strings.EqualFold(ips[0], "auto")
+}
+
 var defaultSTUNServers = []string{"stun.l.google.com:19302", "stun.cloudflare.com:3478"}
 
 func parseSTUNServers(raw string) []string {

@@ -30,7 +30,7 @@ func TestOwnerActiveCall(t *testing.T) {
 		t.Fatalf("empty owner must return empty, got %q", got)
 	}
 
-	b.EndCall("c1", "done")
+	b.EndCall("s1", "c1", "done")
 	if got := b.OwnerActiveCall("op-A"); got != "" {
 		t.Fatalf("op-A's call ended, expected empty, got %q", got)
 	}
@@ -39,14 +39,14 @@ func TestOwnerActiveCall(t *testing.T) {
 func TestSetOwnerEmptyIsNoClaim(t *testing.T) {
 	b := NewBroker(nil, slog.Default())
 	b.UpsertCall(CallRecord{SessionID: "s1", CallID: "c1", Status: StatusRinging})
-	if !b.SetOwner("c1", "") {
+	if !b.SetOwner("s1", "c1", "") {
 		t.Fatal("empty owner accept must proceed")
 	}
-	c, _ := b.GetCall("c1")
+	c, _ := b.GetCall("s1", "c1")
 	if c.Owner != nil {
 		t.Fatalf("empty owner must not claim, got %q", *c.Owner)
 	}
-	if !b.SetOwner("c1", "op-A") {
+	if !b.SetOwner("s1", "c1", "op-A") {
 		t.Fatal("real claim after anonymous accept must succeed")
 	}
 	if got := b.OwnerActiveCall("op-A"); got != "c1" {
@@ -103,7 +103,7 @@ func TestEndCallPersistsRecord(t *testing.T) {
 	fake := &fakeRecordStore{}
 	b := NewBroker(fake, slog.Default())
 	b.UpsertCall(CallRecord{SessionID: "s1", CallID: "c1", Direction: "inbound", Peer: "p", StartedAt: 100, Status: StatusConnected})
-	b.EndCall("c1", "user_ended")
+	b.EndCall("s1", "c1", "user_ended")
 
 	recs, _ := fake.List(context.Background(), "s1", 10, core.HistoryCursor{})
 	if len(recs) != 1 || recs[0].CallID != "c1" || recs[0].EndReason != "user_ended" || recs[0].EndedAt == 0 {
@@ -253,9 +253,34 @@ func TestServeSSESendsSnapshotToNewSubscriber(t *testing.T) {
 func TestNilRecordStoreIsSafe(t *testing.T) {
 	b := NewBroker(nil, slog.Default())
 	b.UpsertCall(CallRecord{SessionID: "s1", CallID: "c1", Status: StatusRinging})
-	b.EndCall("c1", "declined")
+	b.EndCall("s1", "c1", "declined")
 	rows, _, err := b.HistoryRows(context.Background(), "", 10, core.HistoryCursor{})
 	if err != nil || len(rows) != 0 {
 		t.Fatalf("nil store must yield empty history without error, got %+v err %v", rows, err)
+	}
+}
+
+// Uma empresa ligando para outra no MESMO WaCalls: o WhatsApp usa o mesmo
+// call-id dos dois lados, e o registro por call-id sozinho fazia a chamada
+// recebida herdar o dono da feita ("claimed by another client") — Ticketz.
+func TestSameCallIDInTwoSessionsKeepsSeparateRecords(t *testing.T) {
+	b := NewBroker(nil, slog.Default())
+	b.UpsertCall(CallRecord{SessionID: "caller", CallID: "X", Direction: "outbound", Status: StatusRinging, Owner: OwnerRef("op-A")})
+	b.UpsertCall(CallRecord{SessionID: "callee", CallID: "X", Direction: "inbound", Status: StatusRinging})
+
+	if !b.SetOwner("callee", "X", "op-B") {
+		t.Fatal("op-B must claim the callee's record, not collide with the caller's")
+	}
+	out, _ := b.GetCall("caller", "X")
+	in, _ := b.GetCall("callee", "X")
+	if out == nil || in == nil || *out.Owner != "op-A" || *in.Owner != "op-B" {
+		t.Fatalf("owners must stay per session, got caller=%v callee=%v", out, in)
+	}
+	b.EndCall("callee", "X", "user_ended")
+	if _, ok := b.GetCall("callee", "X"); ok {
+		t.Fatal("callee record must be gone")
+	}
+	if _, ok := b.GetCall("caller", "X"); !ok {
+		t.Fatal("ending the callee's record must not end the caller's")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -49,7 +50,9 @@ func (s *Server) doStartCall(sess *session.Session, w http.ResponseWriter, r *ht
 		return
 	}
 	var body struct {
-		Phone string `json:"phone"`
+		Phone    string `json:"phone"`
+		Record   bool   `json:"record"`
+		Announce bool   `json:"announce"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Phone) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone required"})
@@ -65,7 +68,7 @@ func (s *Server) doStartCall(sess *session.Session, w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "operator already on a call"})
 		return
 	}
-	st, err := sess.StartCall(r.Context(), phone)
+	st, err := sess.StartCall(r.Context(), phone, body.Record || r.URL.Query().Get("record") == "1", body.Announce || r.URL.Query().Get("announce") == "1")
 	if errors.Is(err, session.ErrTooManyCalls) {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "max concurrent calls"})
 		return
@@ -115,12 +118,17 @@ func (s *Server) doAccept(sess *session.Session, w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "operator already on a call"})
 		return
 	}
-	if !s.broker.SetOwner(id, owner) {
+	if !s.broker.SetOwner(sess.ID(), id, owner) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "claimed by another client"})
 		return
 	}
 	s.broker.EmitIncomingClaimed(sess.ID(), id, owner)
-	if err := sess.AcceptCall(r.Context(), id); err != nil {
+	var body struct {
+		Record   bool `json:"record"`
+		Announce bool `json:"announce"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body) // body is optional
+	if err := sess.AcceptCall(r.Context(), id, body.Record || r.URL.Query().Get("record") == "1", body.Announce || r.URL.Query().Get("announce") == "1"); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -140,7 +148,7 @@ func (s *Server) handleCallGet(w http.ResponseWriter, r *http.Request) {
 	if sess == nil {
 		return
 	}
-	rec, ok := s.broker.GetCall(r.PathValue("id"))
+	rec, ok := s.broker.GetCall(sess.ID(), r.PathValue("id"))
 	if !ok || rec.SessionID != sess.ID() {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such call"})
 		return
@@ -155,7 +163,7 @@ func (s *Server) doReject(sess *session.Session, w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
-	s.broker.EndCall(id, string(core.EndCallReasonDeclined))
+	s.broker.EndCall(sess.ID(), id, string(core.EndCallReasonDeclined))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -192,7 +200,7 @@ func (s *Server) doMute(sess *session.Session, w http.ResponseWriter, r *http.Re
 func (s *Server) doEndCall(sess *session.Session, w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	_ = sess.EndCall(r.Context(), id)
-	s.broker.EndCall(id, string(core.EndCallReasonUserEnded))
+	s.broker.EndCall(sess.ID(), id, string(core.EndCallReasonUserEnded))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -206,4 +214,48 @@ func normalizePhone(p string) string {
 		}
 	}
 	return b.String()
+}
+
+func (s *Server) handleRecordingGet(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessionByID(w, r.PathValue("sid"))
+	if sess == nil {
+		return
+	}
+	id := r.PathValue("id")
+	path := session.RecordingPath(id)
+	if path == "" || sess.IsRecording(id) {
+		code := http.StatusNotFound
+		if path != "" {
+			code = http.StatusConflict
+		}
+		writeJSON(w, code, map[string]string{"error": "recording not available"})
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such recording"})
+		return
+	}
+	defer f.Close()
+	st, _ := f.Stat()
+	w.Header().Set("Content-Type", "audio/wav")
+	http.ServeContent(w, r, id+".wav", st.ModTime(), f)
+}
+
+func (s *Server) handleRecordingDelete(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessionByID(w, r.PathValue("sid"))
+	if sess == nil {
+		return
+	}
+	id := r.PathValue("id")
+	path := session.RecordingPath(id)
+	if path == "" || sess.IsRecording(id) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "recording not available"})
+		return
+	}
+	if err := os.Remove(path); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such recording"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

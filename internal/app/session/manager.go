@@ -22,7 +22,7 @@ import (
 type Manager struct {
 	appCtx      context.Context
 	container   *sqlstore.Container
-	webrtcAPI   *webrtc.API
+	webrtcAPI   func() *webrtc.API
 	broker      *events.Broker
 	store       core.SessionStore
 	waLogger    waLog.Logger
@@ -31,6 +31,9 @@ type Manager struct {
 	newObserver func(string) core.CallObserver
 	tracer      telemetry.CallTracer
 	photos      core.ContactPhotoStore
+
+	annOnce sync.Once
+	annPCM  []float32
 
 	mu       sync.RWMutex
 	sessions map[string]*Session
@@ -44,9 +47,11 @@ func newSessionID() string {
 }
 
 type Deps struct {
-	Ctx         context.Context
-	Container   *sqlstore.Container
-	WebRTCAPI   *webrtc.API
+	Ctx       context.Context
+	Container *sqlstore.Container
+	// WebRTCAPI returns the API for each new browser bridge (it can change when
+	// the public IP is followed via STUN).
+	WebRTCAPI   func() *webrtc.API
 	Broker      *events.Broker
 	Store       core.SessionStore
 	WALogger    waLog.Logger

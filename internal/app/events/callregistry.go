@@ -41,14 +41,18 @@ func OwnerRef(owner string) *string {
 	return &owner
 }
 
+// callKey scopes a call record to its session: when two sessions of the same
+// WaCalls talk to each other, WhatsApp uses the same call-id on both ends.
+func callKey(sessionID, callID string) string { return sessionID + "\x00" + callID }
+
 func (b *Broker) UpsertCall(r CallRecord) {
 	b.mu.Lock()
 	var prev CallStatus
-	if old, ok := b.calls[r.CallID]; ok {
+	if old, ok := b.calls[callKey(r.SessionID, r.CallID)]; ok {
 		prev = old.Status
 	}
 	cp := r
-	b.calls[r.CallID] = &cp
+	b.calls[callKey(r.SessionID, r.CallID)] = &cp
 	b.mu.Unlock()
 	if r.Status != prev {
 		switch r.Status {
@@ -66,8 +70,8 @@ func (b *Broker) UpsertCall(r CallRecord) {
 	})
 }
 
-func (b *Broker) SetCallPhoto(callID, url string) {
-	rec, ok := b.GetCall(callID)
+func (b *Broker) SetCallPhoto(sessionID, callID, url string) {
+	rec, ok := b.GetCall(sessionID, callID)
 	if !ok || url == "" || rec.PeerPhotoURL == url {
 		return
 	}
@@ -75,10 +79,10 @@ func (b *Broker) SetCallPhoto(callID, url string) {
 	b.UpsertCall(*rec)
 }
 
-func (b *Broker) GetCall(id string) (*CallRecord, bool) {
+func (b *Broker) GetCall(sessionID, id string) (*CallRecord, bool) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	c, ok := b.calls[id]
+	c, ok := b.calls[callKey(sessionID, id)]
 	if !ok {
 		return nil, false
 	}
@@ -86,13 +90,13 @@ func (b *Broker) GetCall(id string) (*CallRecord, bool) {
 	return &cp, true
 }
 
-func (b *Broker) SetOwner(id, owner string) bool {
+func (b *Broker) SetOwner(sessionID, id, owner string) bool {
 	if owner == "" {
 		return true
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	c, ok := b.calls[id]
+	c, ok := b.calls[callKey(sessionID, id)]
 	if !ok {
 		return false
 	}
@@ -109,17 +113,17 @@ func (b *Broker) OwnerActiveCall(owner string) string {
 	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	for id, c := range b.calls {
+	for _, c := range b.calls {
 		if c.Owner != nil && *c.Owner == owner && c.Status != StatusEnded {
-			return id
+			return c.CallID
 		}
 	}
 	return ""
 }
 
-func (b *Broker) EndCall(id, reason string) {
+func (b *Broker) EndCall(sessionID, id, reason string) {
 	b.mu.Lock()
-	c, ok := b.calls[id]
+	c, ok := b.calls[callKey(sessionID, id)]
 	if !ok {
 		b.mu.Unlock()
 		return
@@ -129,9 +133,8 @@ func (b *Broker) EndCall(id, reason string) {
 	c.EndedAt = &now
 	c.EndReason = reason
 	ended := *c
-	delete(b.calls, id)
+	delete(b.calls, callKey(sessionID, id))
 	owner := c.Owner
-	sessionID := c.SessionID
 	b.mu.Unlock()
 
 	b.webhooks.enqueue("call.ended", ended)

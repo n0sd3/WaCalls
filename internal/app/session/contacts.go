@@ -112,7 +112,7 @@ func (s *Session) fetchPeerPhoto(jid types.JID, callID string) {
 	_ = s.mgr.photos.Upsert(ctx, core.ContactPhoto{
 		SessionID: s.id, Jid: jid.String(), URL: info.URL, PictureID: info.ID, FetchedAt: time.Now().UnixMilli(),
 	})
-	s.mgr.broker.SetCallPhoto(callID, info.URL)
+	s.mgr.broker.SetCallPhoto(s.id, callID, info.URL)
 }
 
 func (s *Session) ContactList(ctx context.Context) ([]Contact, error) {

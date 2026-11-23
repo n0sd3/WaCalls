@@ -37,6 +37,8 @@ const (
 	EndCallReasonFailed       EndCallReason = "failed"
 	EndCallReasonDoNotDisturb EndCallReason = "do_not_disturb"
 	EndCallReasonUnknown      EndCallReason = "unknown"
+	// EndCallReasonAcceptedElsewhere: another device of this same account answered.
+	EndCallReasonAcceptedElsewhere EndCallReason = "accepted_elsewhere"
 )
 
 const (

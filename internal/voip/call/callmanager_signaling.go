@@ -90,6 +90,23 @@ func (m *CallManager) HandleCallOffer(ctx context.Context, node *waBinary.Node, 
 func (m *CallManager) HandleCallAccept(ctx context.Context, node *waBinary.Node, peerJid types.JID) {
 	m.mu.Lock()
 	call := m.currentCall
+	// An <accept> for a call we are RECEIVING that comes from our own account is
+	// another linked device (usually the phone) answering it. It is not the peer
+	// answering: joining the relays here would leave the call stuck ringing until
+	// the timeout, with the caller's terminate ignored as "non-answering device".
+	if call != nil && !call.IsInitiator() && !call.IsEnded() && m.isOwnAccountLocked(peerJid) {
+		_ = call.ApplyTransition(Transition{Type: TransitionTerminated, Reason: core.EndCallReasonAcceptedElsewhere})
+		ended := call
+		m.emitState()
+		m.mu.Unlock()
+		m.log.Info("incoming call answered on another device of this account",
+			"call_id", call.CallID, "device", peerJid.String())
+		if m.OnEnded != nil {
+			m.OnEnded(ended)
+		}
+		m.cleanupMedia()
+		return
+	}
 	// First accept wins: a later accept from a SIBLING device must not swap
 	// acceptedByJid and rekey SRTP under an established media path. A retry from
 	// the same device passes through: its first accept may have carried a call key
@@ -464,4 +481,18 @@ func (m *CallManager) HandleCallMute(node *waBinary.Node) {
 	if m.OnPeerMute != nil {
 		m.OnPeerMute(info.CallID, muted)
 	}
+}
+
+// isOwnAccountLocked reports whether jid is any device of the account this
+// manager runs as (LID or phone-number form).
+func (m *CallManager) isOwnAccountLocked(jid types.JID) bool {
+	if jid.User == "" {
+		return false
+	}
+	for _, own := range []types.JID{m.sock.OwnLID(), m.sock.OwnPN()} {
+		if !own.IsEmpty() && own.User == jid.User && own.Server == jid.Server {
+			return true
+		}
+	}
+	return false
 }

@@ -24,7 +24,7 @@ func (s *Session) HasCall(callID string) bool {
 	return ok
 }
 
-func (s *Session) StartCall(ctx context.Context, phone string) (StartedCall, error) {
+func (s *Session) StartCall(ctx context.Context, phone string, record, announce bool) (StartedCall, error) {
 	if max := s.mgr.maxCalls; max > 0 && s.calls.Count() >= max {
 		return StartedCall{}, ErrTooManyCalls
 	}
@@ -33,6 +33,7 @@ func (s *Session) StartCall(ctx context.Context, phone string) (StartedCall, err
 	if err != nil {
 		return StartedCall{}, err
 	}
+	s.SetRecord(callID, record, announce)
 	return StartedCall{
 		CallID:       callID,
 		Peer:         peer.String(),
@@ -49,7 +50,8 @@ func (s *Session) FetchCallPhoto(callID, peer string) {
 	go s.fetchPeerPhoto(jid, callID)
 }
 
-func (s *Session) AcceptCall(ctx context.Context, callID string) error {
+func (s *Session) AcceptCall(ctx context.Context, callID string, record, announce bool) error {
+	s.SetRecord(callID, record, announce)
 	return s.calls.AcceptCall(ctx, callID)
 }
 
@@ -78,11 +80,11 @@ func (s *Session) AttachBrowser(callID, offerSDP string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("no such call %s", callID)
 	}
-	bridge, answer, err := NewBridge(s.mgr.webrtcAPI, offerSDP, s.log)
+	bridge, answer, err := NewBridge(s.mgr.webrtcAPI(), offerSDP, s.log)
 	if err != nil {
 		return "", err
 	}
-	bridge.OnBrowserPCM = func(pcm []float32) { cm.FeedCapturedPCM(pcm) }
+	bridge.OnBrowserPCM = func(pcm []float32) { s.uplink(callID, pcm, cm.FeedCapturedPCM) }
 	bridge.OnTerminalICE = func() { go s.onBridgeDetached(callID, bridge) }
 	s.setBridge(callID, bridge)
 	return answer, nil

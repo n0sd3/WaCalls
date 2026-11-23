@@ -32,6 +32,12 @@ func checkExternalIP(configured []string, ip net.IP, server string, err error) c
 	return checkResult{name: name, status: statusWarn, detail: fmt.Sprintf("stun (%s) reports %s but WACALLS_PUBLIC_IP is %s; remote peers may not reach the advertised address", server, ip, strings.Join(configured, ", "))}
 }
 
+// ProbeExternalIP asks the STUN servers for this host's public IPv4 (port 0 =
+// ephemeral source port).
+func ProbeExternalIP(ctx context.Context, servers []string, port int) (net.IP, string, error) {
+	return probeExternalIP(ctx, servers, port)
+}
+
 func probeExternalIP(ctx context.Context, servers []string, port int) (net.IP, string, error) {
 	if len(servers) == 0 {
 		return nil, "", errors.New("no stun servers configured")

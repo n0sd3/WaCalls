@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"wacalls/internal/app/config"
+	"wacalls/internal/app/doctor"
 	"wacalls/internal/app/events"
 	"wacalls/internal/app/session"
 	"wacalls/internal/store"
@@ -91,10 +92,18 @@ func NewServer(ctx context.Context, cfg config.Config, obsFactory func(string) c
 		return nil, errors.New("no admin configured: set WACALLS_ADMIN_USER and WACALLS_ADMIN_PASSWORD to create the initial admin")
 	}
 
-	api, err := buildBrowserAPI(cfg.WebRTCUDPPort, cfg.PublicIPs)
+	stunServers := cfg.STUNServers
+	browser, err := newBrowserAPI(ctx, cfg.WebRTCUDPPort, cfg.PublicIPs, func(ctx context.Context) (string, error) {
+		ip, _, err := doctor.ProbeExternalIP(ctx, stunServers, 0)
+		if err != nil {
+			return "", err
+		}
+		return ip.String(), nil
+	}, log)
 	if err != nil {
 		return nil, err
 	}
+	go browser.Watch(ctx, publicIPRefreshEvery)
 
 	waLogger := waLog.Noop
 	if log.Enabled(ctx, slog.LevelDebug) {
@@ -103,7 +112,7 @@ func NewServer(ctx context.Context, cfg config.Config, obsFactory func(string) c
 
 	broker := events.NewBroker(bundle.Calls, log)
 	mgr := session.NewManager(session.Deps{
-		Ctx: ctx, Container: bundle.Container, WebRTCAPI: api, Broker: broker,
+		Ctx: ctx, Container: bundle.Container, WebRTCAPI: browser.Get, Broker: broker,
 		Store: bundle.Sessions, WALogger: waLogger, Log: log, MaxCalls: cfg.MaxCalls,
 		NewObserver: obsFactory, Tracer: tracer, Photos: bundle.Photos,
 	})

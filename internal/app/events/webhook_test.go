@@ -146,7 +146,7 @@ func TestBrokerWebhookTransitions(t *testing.T) {
 	b.UpsertCall(rec)
 	rec.Status = StatusConnected
 	b.UpsertCall(rec)
-	b.EndCall("c1", "user_ended")
+	b.EndCall("s1", "c1", "user_ended")
 
 	want := []string{"call.ringing", "call.active", "call.ended"}
 	for i, w := range want {
